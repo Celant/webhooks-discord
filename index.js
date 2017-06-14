@@ -5,23 +5,21 @@ const morgan = require('morgan');
 const multer = require('multer');
 const Redis = require('ioredis');
 const sha1 = require('sha1');
-const Slack = require('slack-node');
 const upload = multer({ storage: multer.memoryStorage() });
+const Discord = require('discord.js');
+
+const hook = new Discord.WebhookClient(process.env.DISCORD_ID, process.env.DISCORD_TOKEN);
 
 const SEVEN_DAYS = 7 * 24 * 60 * 60; // in seconds
 
 //
 // setup
 
-const channel = process.env.SLACK_CHANNEL;
 const appURL = process.env.APP_URL;
 const redis = new Redis(process.env.REDIS_URL);
 
 //
 // slack
-
-const slack = new Slack();
-slack.setWebhook(process.env.SLACK_URL);
 
 //
 // express
@@ -48,11 +46,13 @@ app.post('/', upload.single('thumb'), async(req, res, next) => {
     return res.sendStatus(400);
   }
 
+  console.log(payload.event);
+
   // retrieve cached image
   let image = await redis.getBuffer(key);
 
   // save new image
-  if (payload.event === 'media.play' || payload.event === 'media.rate') {
+  if (payload.event === 'media.play' || payload.event === 'media.stop' || payload.event === 'media.pause' || payload.event === 'media.resume') {
     if (image) {
       console.log('[REDIS]', `Using cached image ${key}`);
     } else if (!image && req.file && req.file.buffer) {
@@ -67,37 +67,45 @@ app.post('/', upload.single('thumb'), async(req, res, next) => {
     }
   }
 
+  if (!isVideo) {
+    return;
+  }
+
   // post to slack
-  if ((payload.event === 'media.scrobble' && isVideo) || payload.event === 'media.rate') {
-    const location = await getLocation(payload.Player.publicAddress);
+  const location = await getLocation(payload.Player.publicAddress);
 
-    let action;
+  let action;
+  let colour;
 
-    if (payload.event === 'media.scrobble') {
-      action = 'played';
-    } else if (payload.rating > 0) {
-      action = 'rated ';
-      for (var i = 0; i < payload.rating / 2; i++) {
-        action += ':star:';
-      }
-    } else {
-      action = 'unrated';
-    }
+  if (payload.event === 'media.play') {
+    action = 'started watching';
+    colour = '#36a64f';
+  } else if (payload.event === 'media.stop') {
+    action = 'stopped watching';
+    colour = 'danger';
+  } else if (payload.event === 'media.resume') {
+    action = 'resumed playback of';
+    colour = '#36a64f';
+  } else if (payload.event === 'media.pause') {
+    action = 'paused playback of';
+    colour = '#a67a2d';
+  } else {
+    return;
+  }
 
-    if (image) {
-      console.log('[SLACK]', `Sending ${key} with image`);
-      notifySlack(appURL + '/images/' + key, payload, location, action);
-    } else {
-      console.log('[SLACK]', `Sending ${key} without image`);
-      notifySlack(null, payload, location, action);
-    }
+  if (image) {
+    console.log('[SLACK]', `Sending ${key} with image`);
+    notifyDiscord(appURL + '/images/' + key, payload, location, action, colour);
+  } else {
+    console.log('[SLACK]', `Sending ${key} without image`);
+    notifyDiscord(null, payload, location, action, colour);
   }
 
   res.sendStatus(200);
 
 });
 
-app.get('/images/:key', async(req, res, next) => {
+app.get('/images/:key.jpg', async(req, res, next) => {
   const exists = await redis.exists(req.params.key);
 
   if (!exists) {
@@ -105,6 +113,7 @@ app.get('/images/:key', async(req, res, next) => {
   }
 
   const image = await redis.getBuffer(req.params.key);
+  res.contentType('jpeg')
   sharp(image).jpeg().pipe(res);
 });
 
@@ -170,26 +179,26 @@ function formatSubtitle(metadata) {
   return ret;
 }
 
-function notifySlack(imageUrl, payload, location, action) {
+function notifyDiscord(imageUrl, payload, location, action, colour) {
   let locationText = '';
 
   if (location) {
     const state = location.country_code === 'US' ? location.region_name : location.country_name;
     locationText = `near ${location.city}, ${state}`;
   }
+  console.log("Sending notification to Discord");
+  console.log(imageUrl + '.jpg');
 
-  slack.webhook({
-    channel,
-    username: 'Plex',
-    icon_emoji: ':plex:',
-    attachments: [{
-      fallback: 'Required plain-text summary of the attachment.',
-      color: '#a67a2d',
-      title: formatTitle(payload.Metadata),
-      text: formatSubtitle(payload.Metadata),
-      thumb_url: imageUrl,
-      footer: `${action} by ${payload.Account.title} on ${payload.Player.title} from ${payload.Server.title} ${locationText}`,
-      footer_icon: payload.Account.thumb
-    }]
-  }, () => {});
+  hook.sendSlackMessage({
+    'username': 'Plex',
+    'text': `${payload.Account.title} ${action} ${formatTitle(payload.Metadata)} on ${payload.Server.title}`/*,
+    'attachments': [{
+      'color': colour,
+      'title': formatTitle(payload.Metadata),
+      'text': formatSubtitle(payload.Metadata),
+      'thumb_url': imageUrl + '.jpg',
+      'footer': payload.Metadata.summary,
+    }]*/
+  });
 }
+

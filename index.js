@@ -19,9 +19,6 @@ const appURL = process.env.APP_URL;
 const redis = new Redis(process.env.REDIS_URL);
 
 //
-// slack
-
-//
 // express
 
 const app = express();
@@ -71,7 +68,7 @@ app.post('/', upload.single('thumb'), async(req, res, next) => {
     return;
   }
 
-  // post to slack
+  // post to discord
   const location = await getLocation(payload.Player.publicAddress);
 
   let action;
@@ -94,10 +91,10 @@ app.post('/', upload.single('thumb'), async(req, res, next) => {
   }
 
   if (image) {
-    console.log('[SLACK]', `Sending ${key} with image`);
+    console.log('[DISCORD]', `Sending ${key} with image`);
     notifyDiscord(appURL + '/images/' + key, payload, location, action, colour);
   } else {
-    console.log('[SLACK]', `Sending ${key} without image`);
+    console.log('[DISCORD]', `Sending ${key} without image`);
     notifyDiscord(null, payload, location, action, colour);
   }
 
